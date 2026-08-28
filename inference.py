@@ -1,116 +1,76 @@
-import cv2
-import requests
-import sys
+import streamlit as st
+from inference_sdk import InferenceHTTPClient, InferenceConfiguration
+import base64
+import tempfile
+import os
 
-# =========================================
-# CONFIGURATION
-# =========================================
+# --- THIẾT LẬP GIAO DIỆN TRANG WEB ---
+st.set_page_config(page_title="Nhận diện Bóng chuyền", layout="centered")
+st.title("🏐 Ứng dụng Nhận diện Bóng chuyền")
+st.write("Tải một bức ảnh lên để mô hình AI phân tích và trả về kết quả.")
+
+# --- CẤU HÌNH API ROBOFLOW ---
 API_KEY = "FBrKWTJy48jWcHmng3uC"
-PROJECT_ID = "volleyball-video-jl3zk"
-MODEL_VERSION = "1"
+WORKSPACE_NAME = "nh-nht-minh-phm-s-workspace"
+WORKFLOW_ID = "volleyball-video-vvolleyball-video-jl3zk-1-yolov8n-t1-logic-2"
 
-# Roboflow REST API endpoint for inference
-INFERENCE_URL = f"https://detect.roboflow.com/{PROJECT_ID}/{MODEL_VERSION}?api_key={API_KEY}"
+# Sử dụng @st.cache_resource để không phải kết nối lại API mỗi lần bấm nút
+@st.cache_resource
+def get_client():
+    # Sử dụng URL serverless của Roboflow để chạy online thay vì localhost
+    return InferenceHTTPClient(
+        api_url="https://serverless.roboflow.com", 
+        api_key=API_KEY
+    ).configure(InferenceConfiguration(
+        api_key_transport="header" 
+    ))
 
-# Input and output videos
-INPUT_VIDEO = "slipsv2.mp4"  # Path to input video
-OUTPUT_VIDEO = "fall_output_annotatedv8.mp4" # Path for saving annotated output
+client = get_client()
 
-# Confidence threshold
-CONF_THRESHOLD = 0.2
+# --- KHU VỰC TẢI ẢNH LÊN ---
+uploaded_file = st.file_uploader("Chọn ảnh từ máy của bạn (JPG, PNG)", type=["jpg", "jpeg", "png"])
 
-# =========================================
-# FUNCTION TO RUN INFERENCE
-# =========================================
-def infer_frame(frame):
-    # Encode frame as JPG before sending to Roboflow API
-    _, img_encoded = cv2.imencode('.jpg', frame)
-
-    # Send frame for prediction
-    response = requests.post(
-        INFERENCE_URL,
-        files={"file": img_encoded.tobytes()},
-        data={"name": "video_frame"}
-    )
-    # If successful, return predictions as JSON
-    if response.status_code == 200:
-        return response.json()
-    else:
-        # Print error if API call fails
-        print("Error:", response.text)
-        return None
-
-def main():
-    cap = cv2.VideoCapture(INPUT_VIDEO)
+if uploaded_file is not None:
+    # Hiển thị ảnh gốc vừa tải lên
+    st.image(uploaded_file, caption="Ảnh gốc", use_container_width=True)
     
-    # Kiểm tra xem có mở được video không
-    if not cap.isOpened():
-        print(f"Error: Không thể mở video đầu vào: {INPUT_VIDEO}")
-        sys.exit()
+    # Nút bấm chạy AI
+    if st.button("🚀 Chạy Nhận Diện", type="primary"):
+        with st.spinner("Đang gửi dữ liệu lên AI, vui lòng đợi..."):
+            try:
+                # Tạo file tạm thời để lưu ảnh vừa tải lên (vì workflow cần đường dẫn file)
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tmp_file:
+                    tmp_file.write(uploaded_file.getvalue())
+                    tmp_path = tmp_file.name
 
-    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-    fps = int(cap.get(cv2.CAP_PROP_FPS))
-    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    out = cv2.VideoWriter(OUTPUT_VIDEO, fourcc, fps, (width, height))
+                # Chạy Workflow dự đoán
+                result = client.run_workflow(
+                    workspace_name=WORKSPACE_NAME,
+                    workflow_id=WORKFLOW_ID,
+                    images={
+                        "image": tmp_path
+                    },
+                    use_cache=True 
+                )
 
-    frame_count = 0
-    while True:
-        ret, frame = cap.read()
-        if not ret:  # Exit loop if no more frames
-            break
+                # Giải mã bức ảnh kết quả dạng base64
+                base64_string = result[0]['bounding_box_visualization_output']
+                img_bytes = base64.b64decode(base64_string)
 
-        frame_count += 1
-        print(f"Processing frame {frame_count}")
+                # Hiển thị kết quả lên màn hình web
+                st.success("✅ Phân tích thành công!")
+                st.image(img_bytes, caption="Kết quả nhận diện", use_container_width=True)
 
-        predictions = infer_frame(frame)
+                # Cung cấp nút tải ảnh kết quả về
+                st.download_button(
+                    label="⬇️ Tải ảnh kết quả về máy",
+                    data=img_bytes,
+                    file_name="ket_qua_nhan_dien.jpg",
+                    mime="image/jpeg"
+                )
 
-        if predictions and "predictions" in predictions:
-            for pred in predictions["predictions"]:
-                confidence = pred["confidence"]
+                # Xóa file tạm để giải phóng bộ nhớ
+                os.remove(tmp_path)
 
-                # Skip low-confidence detections
-                if confidence < CONF_THRESHOLD:
-                    continue
-                
-                # Extract bounding box center coordinates and size
-                x, y = int(pred["x"]), int(pred["y"])
-                w, h = int(pred["width"]), int(pred["height"])
-                class_name = pred["class"].lower()
-
-                # ===== FLIP THE LABELS HERE =====
-                if class_name == "fall":
-                    display_label = "stand"
-                    color = (0, 255, 0)  # green for "stand"
-                elif class_name == "stand":
-                    display_label = "fall"
-                    color = (0, 0, 255)  # red for "fall"
-                else:
-                    display_label = class_name
-                    color = (255, 255, 0)  # yellow for any unknown class
-                
-                # Draw bounding box around detected object
-                cv2.rectangle(frame, (x - w//2, y - h//2), (x + w//2, y + h//2), color, 5)
-
-                # Draw label text above the bounding box
-                label = f"{display_label} ({confidence:.2f})"
-                cv2.putText(frame, label, (x - w//2, y - h//2 - 15),
-                            cv2.FONT_HERSHEY_SIMPLEX, 1.8, color, 5)
-
-        # Write annotated frame to output video
-        out.write(frame)
-
-        # Show frame in a window (press 'q' to stop early)
-        cv2.imshow("Fall Detection", frame)
-        if cv2.waitKey(1) & 0xFF == ord('q'):
-            print("Stopped by user")
-            break
-
-    # Phần dọn dẹp tài nguyên đã được đưa vào đúng thụt lề bên trong hàm main()
-    cap.release()
-    out.release()
-    cv2.destroyAllWindows()
-    print("✅ Processing complete. Annotated video saved as", OUTPUT_VIDEO)
-
-if __name__ == "__main__":
-    main()
+            except Exception as e:
+                st.error(f"❌ Có lỗi xảy ra trong quá trình nhận diện: {e}")

@@ -1,6 +1,6 @@
 # 🏐 Volleyball: Ball & Player Detection
 
-[![Open in Streamlit](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](DÁN_ĐƯỜNG_LINK_WEB_CỦA_BẠN_VÀO_ĐÂY)
+[![Open in Streamlit](https://volleyballdectecting.streamlit.app/)]
 
 Một ứng dụng web tích hợp Computer Vision giúp tự động nhận diện cầu thủ và quả bóng chuyền trong ảnh. 
 
